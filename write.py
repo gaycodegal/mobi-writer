@@ -168,7 +168,7 @@ def sizeofGlobHeader(recordlen):
 
     
 def generateMobi(name, text):
-    with open(name, "wb") as f:
+    with open(name + b".mobi", "wb") as f:
         record_size = 4096
         text_length = len(text)
         #glob_header
@@ -296,4 +296,4 @@ def generateMobi(name, text):
             f.write(text[r*record_size:(r+1)*record_size])
         f.write(b"\xe9\x8e\x0d\x0a")
 #test()       
-generateMobi(b"the_end_is_nigh.mobi", b'<html><head><guide></guide></head><body><div><br/> <br/> The Project Gutenberg EBook of On the Origin of Species, by Charles Darwin<br/></div></body></html>')
+generateMobi(b"Test", b'<html><head><guide></guide></head><body><div><br/> <br/>Testing Testing 1 2 3<br/></div></body></html>')
