@@ -168,12 +168,13 @@ def sizeofGlobHeader(recordlen):
 
     
 def generateMobi(name, text):
+    nmagicrecords = 3
     with open(name + b".mobi", "wb") as f:
         record_size = 4096
         text_length = len(text)
         #glob_header
         modtext = text_length % record_size
-        recordlen = (text_length // record_size) + (0 if (modtext == 0) else 1) + 1 + 1 #plus one for palm meta record plus one for empty record
+        recordlen = (text_length // record_size) + (0 if (modtext == 0) else 1) + 1 + nmagicrecords #plus one for palm meta record plus n magic records
         attributes = 0
         version = 0
         created = int(time.time())
@@ -208,9 +209,12 @@ def generateMobi(name, text):
         hsize = sizeofHeader(name, recordlen)
         f.write(struct.pack('>II', sizeofGlobHeader(recordlen), 0)) # meta record
         print(hsize)
-        for r in range(recordlen - 2):
+        for r in range(recordlen - 1 - nmagicrecords):
             f.write(struct.pack('>II', hsize + (record_size * r), r + 1))
-        f.write(struct.pack('>II', hsize + record_size * (recordlen - 3) +  (record_size if modtext == 0 else modtext), recordlen - 1))
+        offset = hsize + record_size * (recordlen - 2 - nmagicrecords) +  (record_size if modtext == 0 else modtext)
+        f.write(struct.pack('>II', offset, recordlen - 3)) # FLIS
+        f.write(struct.pack('>II', offset + 36, recordlen - 2)) # FCIS
+        f.write(struct.pack('>II', offset + 36 + 44, recordlen - 1)) # CRLF
         # palm
 
             
@@ -222,7 +226,7 @@ def generateMobi(name, text):
                             compression,
                             unused,
                             len(text),
-                            recordlen,
+                            recordlen - nmagicrecords,
                             record_size,
                             encryption_type,
                             unknown))
@@ -244,7 +248,7 @@ def generateMobi(name, text):
                             
                             (struct.pack(">I", 0xFFFFFFFF) * 10),
                             
-                            recordlen, #last empty record
+                            recordlen - nmagicrecords + 1, #last empty record
                             nameoffset,
                             len(name),
                             
@@ -271,11 +275,11 @@ def generateMobi(name, text):
                             0,
 
                             1,#first text record
-                            recordlen,#last content
+                            recordlen - nmagicrecords + 1,#last content
                             1,#unknown
-                            0,#fcis
+                            recordlen - nmagicrecords + 2,#fcis
                             1, #"-Unknown",
-                            0,#"FLIS record",
+                            recordlen - nmagicrecords + 1,#"FLIS record",
                             1, #"-Unknown"
                             
                             0, #"-Unknown 0x0000000000000000"
@@ -291,9 +295,15 @@ def generateMobi(name, text):
                             
         ))
         f.write(name)
-        for r in range(recordlen - 2):
+        for r in range(recordlen - 1 - nmagicrecords):
             print("wrote", text[r*record_size:(r+1)*record_size])
             f.write(text[r*record_size:(r+1)*record_size])
+        f.write(struct.pack("> 4sIHH IIHH III", b"FLIS", 8, 65, 0,
+                            0, 0xFFFFFFFF, 1, 3,
+                            3, 1, 0xFFFFFFFF))
+        f.write(struct.pack("> 4sIII IIII IHHI", b"FCIS", 20,16,1,
+                            0, text_length, 0, 32,
+                            8, 1, 1, 0))
         f.write(b"\xe9\x8e\x0d\x0a")
 #test()       
 generateMobi(b"Test", b'<html><head><guide></guide></head><body><div><br/> <br/>Testing Testing 1 2 3<br/></div></body></html>')
