@@ -19,7 +19,7 @@ def parsePalmHeader(f):
 
 def parseMobiHeader(f, records):
     offset = f.tell()
-    header = readStruct(f,'> IIII II 40s III IIIII IIII I 36s IIII 8s HHIIIII LI IIIII',[
+    header = readStruct(f,'> IIII II 40s III IIIII IIII I 36s IIII 8s HHIIIII 8sI IIIII',[
         "identifier",
         "header_length",
         "Mobi type",
@@ -54,10 +54,10 @@ def parseMobiHeader(f, records):
         "DRM Size",
         "DRM Flags",
 
-        None, #"-Usually Zeros, unknown 8 bytes",
+        "Zero", #"-Usually Zeros, unknown 8 bytes",
 
-        None, #"-Unknown",
-        "Last Image Record",
+        "First Content",
+        "Last Content",
         None, #"-Unknown",
         "FCIS record",
         None, #"-Unknown",
@@ -110,7 +110,7 @@ def parseEXTHHeader(f):
     return header
 
 def test():
-    with open("the_end_is_nigh.mobi", "rb") as f:
+    with open(sys.argv[2] if len(sys.argv) >= 3 else "Test.mobi", "rb") as f:
         index = 0
         glob_header = readStruct(f, '>32shhIIIIII4s4sIIH', [
             "name",
@@ -144,7 +144,7 @@ def test():
             rec["attr"] = (rec['UID'] & 0xFF000000) >> 24
             rec["UID"] = rec["UID"] & 0xFFFFFF
             records[r] = rec
-            print(records[0])
+            print(records[r])
             
         #now parse palmdoc
         f.seek(records[0]["offset"])
@@ -158,7 +158,7 @@ def test():
             pprint(exth_header)
 
 def mobiheaderlen(name):
-    return struct.calcsize('>HHIHHHH') + struct.calcsize('> 4sIII II 40s III IIIII IIII I 36s IIII L HHIIIII LI IIII I 20s I') + len(name) #mobi + name
+    return struct.calcsize('>HHIHHHH') + struct.calcsize('> 4sIII II 40s III IIIII IIII I 36s IIII 8s HHIIIII 8sI IIII I 20s I') + len(name) #mobi + name
 
 def sizeofHeader(name, recordlen):
     return struct.calcsize('>32shhIIIIII4s4sIIH') + (struct.calcsize(">II") * recordlen) + mobiheaderlen(name)
@@ -168,8 +168,9 @@ def sizeofGlobHeader(recordlen):
 
     
 def generateMobi(name, text):
-    nmagicrecords = 3
+    nmagicrecords = 4 # '\0\0', flis, fcis, crlf
     with open(name + b".mobi", "wb") as f:
+        padded_name = name + b"\0\0" + ((len(name) + 2) % 4 * b"\0")
         record_size = 4096
         text_length = len(text)
         #glob_header
@@ -188,7 +189,7 @@ def generateMobi(name, text):
         uniqueIDseed = recordlen
         nextRecordListID = 0
         
-        shortname = name[:32]
+        shortname = name[:31]
         shortname = shortname + b"\0" * (32 - len(shortname))
         f.write(struct.pack('>32shhIIIIII4s4sIIH',
                             shortname,
@@ -206,15 +207,17 @@ def generateMobi(name, text):
                             nextRecordListID,
                             recordlen
         ))
-        hsize = sizeofHeader(name, recordlen)
+        hsize = sizeofHeader(padded_name, recordlen)
         f.write(struct.pack('>II', sizeofGlobHeader(recordlen), 0)) # meta record
         print(hsize)
         for r in range(recordlen - 1 - nmagicrecords):
+            print("wrote record", hsize + (record_size * r), r + 1)
             f.write(struct.pack('>II', hsize + (record_size * r), r + 1))
-        offset = hsize + record_size * (recordlen - 2 - nmagicrecords) +  (record_size if modtext == 0 else modtext)
-        f.write(struct.pack('>II', offset, recordlen - 3)) # FLIS
-        f.write(struct.pack('>II', offset + 36, recordlen - 2)) # FCIS
-        f.write(struct.pack('>II', offset + 36 + 44, recordlen - 1)) # CRLF
+        offset = hsize + record_size * (recordlen - 2 - nmagicrecords) +  (record_size if (modtext == 0) else modtext)
+        f.write(struct.pack('>II', offset, recordlen - 4)) # double null
+        f.write(struct.pack('>II', offset + 2, recordlen - 3)) # FLIS
+        f.write(struct.pack('>II', offset + 36 + 2, recordlen - 2)) # FCIS
+        f.write(struct.pack('>II', offset + 36 + 44 + 2, recordlen - 1)) # CRLF
         # palm
 
             
@@ -230,16 +233,16 @@ def generateMobi(name, text):
                             record_size,
                             encryption_type,
                             unknown))
-
+        
         # mobi
         mobitype = 2 # book
         encoding = 65001 #utf-8
         genver = 6
-        nameoffset =  mobiheaderlen(name) - len(name)
+        nameoffset =  mobiheaderlen(padded_name) - len(padded_name)
         print("recordlen", recordlen)
-        f.write(struct.pack('> 4sIII II 40s III IIIII IIII I 36s IIII L HHIIIII LI IIII I 20s I',
+        f.write(struct.pack('> 4sIII II 40s III IIIII IIII I 36s IIII 8s HHIIIII 8sI IIII I 20s I',
                             b"MOBI",
-                            mobiheaderlen(name),
+                            mobiheaderlen(padded_name),
                             mobitype,
                             encoding,
                             
@@ -248,7 +251,7 @@ def generateMobi(name, text):
                             
                             (struct.pack(">I", 0xFFFFFFFF) * 10),
                             
-                            recordlen - nmagicrecords + 1, #last empty record
+                            recordlen - nmagicrecords + 1, #first non book (flis)
                             nameoffset,
                             len(name),
                             
@@ -272,17 +275,17 @@ def generateMobi(name, text):
                             0,#drm size
                             0, #drm flags
 
-                            0,
+                            b"\0" * 8,
 
                             1,#first text record
-                            recordlen - nmagicrecords + 1,#last content
+                            recordlen - nmagicrecords - 1,#last content
                             1,#unknown
                             recordlen - nmagicrecords + 2,#fcis
                             1, #"-Unknown",
                             recordlen - nmagicrecords + 1,#"FLIS record",
                             1, #"-Unknown"
                             
-                            0, #"-Unknown 0x0000000000000000"
+                            b"\0" * 8, #"-Unknown 0x0000000000000000"
                             0xFFFFFFFF, #"-Unknown 0xFFFFFFFF"
                             
                             0, #First Compilation data section count	Use 0x00000000
@@ -294,10 +297,12 @@ def generateMobi(name, text):
                             0
                             
         ))
-        f.write(name)
+        f.write(padded_name)
         for r in range(recordlen - 1 - nmagicrecords):
             print("wrote", text[r*record_size:(r+1)*record_size])
             f.write(text[r*record_size:(r+1)*record_size])
+        #f.write(b" " * (record_size - modtext))
+        f.write(b"\0\0")
         f.write(struct.pack("> 4sIHH IIHH III", b"FLIS", 8, 65, 0,
                             0, 0xFFFFFFFF, 1, 3,
                             3, 1, 0xFFFFFFFF))
@@ -305,5 +310,8 @@ def generateMobi(name, text):
                             0, text_length, 0, 32,
                             8, 1, 1, 0))
         f.write(b"\xe9\x8e\x0d\x0a")
-#test()       
-generateMobi(b"Test", b'<html><head><guide></guide></head><body><div><br/> <br/>Testing Testing 1 2 3<br/></div></body></html>')
+
+if len(sys.argv) >= 2 and sys.argv[1] == "test":
+    test()
+else:
+    generateMobi(b"Test", b'<html><head><guide></guide></head><body><div><br/> <br/>Testing Testing 1 2 3<br/></div></body></html>')
