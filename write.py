@@ -2,6 +2,7 @@ import time
 import struct
 import sys
 from pprint import pprint
+from lz77 import encode
 def printZIP(a, b):
     for item in zip(a, b):
         print(item)
@@ -91,17 +92,19 @@ def readStruct(f, fmt, fields, slen = None):
 
 
 def parseEXTHHeader(f):
-    header = readStruct(f, '>III', [
+    header = readStruct(f, '>4sII', [
         'id',
         'length',
         '#records'
     ])
+    print("exth", header)
 
     records = [0] * header["#records"]
     fmt = ">II"
     print(header["#records"])
     for r in range(header['#records']):
         rec = readStruct(f, fmt, ["type", "length"])
+        print(rec)
         rec["length"] -= 8
         rec["data"] = f.read(rec["length"])
         records[r] = rec
@@ -157,17 +160,44 @@ def test():
             exth_header = parseEXTHHeader(f)
             pprint(exth_header)
 
-def mobiheaderlen(name):
-    return struct.calcsize('>HHIHHHH') + struct.calcsize('> 4sIII II 40s III IIIII IIII I 36s IIII 8s HHIIIII 8sI IIII I 20s I') + len(name) #mobi + name
+def mobiheaderlen():
+    return struct.calcsize('> 4sIII II 40s III IIIII IIII I 36s IIII 8s HHIIIII 8sI IIII I 20s I') #mobi + name
 
-def sizeofHeader(name, recordlen):
-    return struct.calcsize('>32shhIIIIII4s4sIIH') + (struct.calcsize(">II") * recordlen) + mobiheaderlen(name)
+def nameOffset(exthsize):
+    return struct.calcsize('>HHIHHHH') + mobiheaderlen() + exthsize
+
+def sizeofHeader(name, recordlen, exthsize):
+    return struct.calcsize('>32shhIIIIII4s4sIIH') + (struct.calcsize(">II") * recordlen) + nameOffset(exthsize) + len(name)
 
 def sizeofGlobHeader(recordlen):
     return struct.calcsize('>32shhIIIIII4s4sIIH')+ (struct.calcsize(">II") * recordlen) #records
 
+def sizeofExthHeader(data):
+    e = struct.calcsize('>4sII') + (len(data) * struct.calcsize("II")) + sum([len(rec['data']) for rec in data])
+    pad = 4 - (e % 4)
+    return e + pad, pad
     
 def generateMobi(name, text):
+    exth = [{'data': b'Test', 'type': 503},
+            {'data': b'en', 'type': 524},
+            {'data': b'My Author', 'type': 100},
+            {'data': b'calibre (3.16.0) [https://calibre-ebook.com]',
+             'type': 108},
+            {'data': b'443467fb-212b-4817-8519-e9009343355d',
+             'type': 113},
+            {'data': b'calibre:443467fb-212b-4817-8519-e9009343355d',
+             'type': 112},
+            {'data': b'EBOK', 'type': 501},
+            {'data': b'2018-05-30T21:40:16.296448+00:00',
+             'type': 106},
+            {'data': b'\x00\x00\x00\xc9', 'type': 204},
+            {'data': b'\x00\x00\x00\x01', 'type': 205},
+            {'data': b'\x00\x00\x00\x02', 'type': 206},
+            {'data': b'\x00\x00\x82\x1b', 'type': 207},
+            {'data': b'\x00\x00\x00\x19', 'type': 116},
+            {'data': b'\x00\x00\x00\x00', 'type': 131}]
+    exthsize, exthpad = sizeofExthHeader(exth)
+    
     nmagicrecords = 4 # '\0\0', flis, fcis, crlf
     with open(name + b".mobi", "wb") as f:
         padded_name = name + b"\0\0" + ((len(name) + 2) % 4 * b"\0")
@@ -207,13 +237,17 @@ def generateMobi(name, text):
                             nextRecordListID,
                             recordlen
         ))
-        hsize = sizeofHeader(padded_name, recordlen)
+        hsize = sizeofHeader(padded_name, recordlen, exthsize)
         f.write(struct.pack('>II', sizeofGlobHeader(recordlen), 0)) # meta record
         print(hsize)
+        textsize = 0
+        textsnips = []
         for r in range(recordlen - 1 - nmagicrecords):
             print("wrote record", hsize + (record_size * r), r + 1)
-            f.write(struct.pack('>II', hsize + (record_size * r), r + 1))
-        offset = hsize + record_size * (recordlen - 2 - nmagicrecords) +  (record_size if (modtext == 0) else modtext)
+            textsnips.append(encode(text[r * 4096: (r+1) * 4096]))
+            f.write(struct.pack('>II', hsize + textsize, r + 1))
+            textsize += len(textsnips[-1])
+        offset = hsize + textsize
         f.write(struct.pack('>II', offset, recordlen - 4)) # double null
         f.write(struct.pack('>II', offset + 2, recordlen - 3)) # FLIS
         f.write(struct.pack('>II', offset + 36 + 2, recordlen - 2)) # FCIS
@@ -221,7 +255,7 @@ def generateMobi(name, text):
         # palm
 
             
-        compression = 1 # no compression
+        compression = 2 # no compression
         unused = 0
         encryption_type = 0 # none
         unknown = 0 #usu zero
@@ -238,11 +272,11 @@ def generateMobi(name, text):
         mobitype = 2 # book
         encoding = 65001 #utf-8
         genver = 6
-        nameoffset =  mobiheaderlen(padded_name) - len(padded_name)
+        nameoffset =  nameOffset(exthsize)
         print("recordlen", recordlen)
         f.write(struct.pack('> 4sIII II 40s III IIIII IIII I 36s IIII 8s HHIIIII 8sI IIII I 20s I',
                             b"MOBI",
-                            mobiheaderlen(padded_name),
+                            mobiheaderlen(),
                             mobitype,
                             encoding,
                             
@@ -266,7 +300,7 @@ def generateMobi(name, text):
                             0,#off
                             0,#length
                             
-                            0, #exth
+                            0x40, #exth
                             
                             ((struct.pack(">I", 0xFFFFFFFF) * 36)),
 
@@ -297,10 +331,23 @@ def generateMobi(name, text):
                             0
                             
         ))
+
+        # EXTH Header
+        f.write(struct.pack("> 4sII",
+                b"EXTH",
+                exthsize,
+                len(exth)
+                ))
+
+        for data in exth:
+            f.write(struct.pack("> II", data["type"], len(data["data"]) + struct.calcsize(">II")))
+            f.write(data["data"])
+        f.write(exthpad * b"\0")
         f.write(padded_name)
-        for r in range(recordlen - 1 - nmagicrecords):
-            print("wrote", text[r*record_size:(r+1)*record_size])
-            f.write(text[r*record_size:(r+1)*record_size])
+        for snip in textsnips:
+            print("wrote", (snip), "at", f.tell())
+            #print("wrote", text[r*record_size:(r+1)*record_size])
+            f.write(snip)
         #f.write(b" " * (record_size - modtext))
         f.write(b"\0\0")
         f.write(struct.pack("> 4sIHH IIHH III", b"FLIS", 8, 65, 0,
